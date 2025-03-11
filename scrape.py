@@ -8,13 +8,19 @@ import hashlib
 from collections import deque
 import sys
 import datetime
+import json
+import pickle
 
 # Configuration
 START_URL = "https://civilization.fandom.com/wiki/Civilization_V"
 OUTPUT_DIR = "./data"
-MAX_ARTICLES = 5000
+MAX_ARTICLES = 10000
 DELAY = 1  # Delay between requests in seconds to be respectful
 USER_AGENT = "CivVWikiCrawler/1.0 (Educational Project)"
+# How often to save state (in seconds)
+SAVE_STATE_INTERVAL = 60
+# State file path
+STATE_FILE = os.path.join(OUTPUT_DIR, "crawler_state.pkl")
 
 # Create output directory if it doesn't exist
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -25,6 +31,8 @@ visited_urls = set()
 saved_count = 0
 # Track total URLs processed
 processed_count = 0
+# Queue for URLs to process
+queue = deque()
 
 def is_valid_civ5_article(url):
     """Check if the URL is a valid Civilization V article."""
@@ -38,6 +46,13 @@ def is_valid_civ5_article(url):
     # Parse the URL to get the path
     parsed_url = urlparse(url)
     path = parsed_url.path
+
+    if "fi" in path or "de" in path or "fr" in path or "es" in path or "it" in path or "ja" in path or "ko" in path or "pl" in path or "pt" in path or "ru" in path or "zh" in path:
+        return False
+    
+    # Skip category, talk and category talk pages
+    if any(x in path for x in ["Category:", "Talk:", "Category_talk:"]):
+        return False
     
     # Must end with (Civ5)
     if not path.endswith("(Civ5)"):
@@ -80,12 +95,67 @@ def print_progress():
     global processed_count, saved_count
     print(f"Processed: {processed_count} URLs | Saved: {saved_count}/{MAX_ARTICLES} articles | Queue: {len(queue)} URLs")
 
+def save_state():
+    """Save the current state of the crawler to a file."""
+    global visited_urls, saved_count, processed_count, queue
+    
+    state = {
+        'visited_urls': list(visited_urls),
+        'saved_count': saved_count,
+        'processed_count': processed_count,
+        'queue': list(queue)
+    }
+    
+    # Use a temporary file to avoid corruption if the process is killed during saving
+    temp_file = STATE_FILE + '.tmp'
+    
+    try:
+        with open(temp_file, 'wb') as f:
+            pickle.dump(state, f)
+        
+        # Rename the temporary file to the actual state file
+        if os.path.exists(STATE_FILE):
+            os.remove(STATE_FILE)
+        os.rename(temp_file, STATE_FILE)
+        
+        print(f"State saved: {processed_count} URLs processed, {saved_count} articles saved, {len(queue)} URLs in queue")
+    except Exception as e:
+        print(f"Error saving state: {e}")
+
+def load_state():
+    """Load the crawler state from a file if it exists."""
+    global visited_urls, saved_count, processed_count, queue
+    
+    if not os.path.exists(STATE_FILE):
+        print("No previous state found. Starting fresh crawl.")
+        return False
+    
+    try:
+        with open(STATE_FILE, 'rb') as f:
+            state = pickle.load(f)
+        
+        visited_urls = set(state['visited_urls'])
+        saved_count = state['saved_count']
+        processed_count = state['processed_count']
+        queue = deque(state['queue'])
+        
+        print(f"Loaded previous state: {processed_count} URLs processed, {saved_count} articles saved, {len(queue)} URLs in queue")
+        return True
+    except Exception as e:
+        print(f"Error loading state: {e}")
+        print("Starting fresh crawl.")
+        return False
+
 def crawl():
     """Crawl the website starting from the START_URL using a queue-based approach."""
-    global saved_count, processed_count, queue
+    global saved_count, processed_count, queue, visited_urls
     
-    # Initialize the queue with the starting URL
-    queue = deque([START_URL])
+    # Check if we have a saved state to resume from
+    state_loaded = load_state()
+    
+    # If no state was loaded, initialize the queue with the starting URL
+    if not state_loaded:
+        queue = deque([START_URL])
     
     # Set up headers for requests
     headers = {
@@ -95,13 +165,18 @@ def crawl():
     # Record start time
     start_time = time.time()
     last_progress_time = start_time
+    last_save_time = start_time
     
-    # Create a log file
+    # Create or append to log file
     log_file = os.path.join(OUTPUT_DIR, "crawl_log.txt")
-    with open(log_file, "w", encoding="utf-8") as f:
-        f.write(f"Crawl started at: {datetime.datetime.now()}\n")
-        f.write(f"Starting URL: {START_URL}\n")
-        f.write(f"Max articles: {MAX_ARTICLES}\n\n")
+    log_mode = "a" if state_loaded else "w"
+    
+    with open(log_file, log_mode, encoding="utf-8") as f:
+        f.write(f"\nCrawl {'resumed' if state_loaded else 'started'} at: {datetime.datetime.now()}\n")
+        if not state_loaded:
+            f.write(f"Starting URL: {START_URL}\n")
+        f.write(f"Max articles: {MAX_ARTICLES}\n")
+        f.write(f"Current progress: {saved_count}/{MAX_ARTICLES} articles saved\n\n")
     
     while queue and saved_count < MAX_ARTICLES:
         # Get the next URL from the queue
@@ -124,6 +199,11 @@ def crawl():
         if current_time - last_progress_time > 10:
             print_progress()
             last_progress_time = current_time
+        
+        # Save state periodically
+        if current_time - last_save_time > SAVE_STATE_INTERVAL:
+            save_state()
+            last_save_time = current_time
 
         try:
             # Make the request
@@ -180,6 +260,9 @@ def crawl():
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(f"Error: {url} - {str(e)}\n")
     
+    # Save final state
+    save_state()
+    
     # Record end time and calculate duration
     end_time = time.time()
     duration = end_time - start_time
@@ -201,8 +284,12 @@ if __name__ == "__main__":
         crawl()
     except KeyboardInterrupt:
         print("\nCrawling interrupted by user.")
+        # Save state on keyboard interrupt
+        save_state()
     except Exception as e:
         print(f"Unexpected error: {e}")
+        # Save state on unexpected error
+        save_state()
     
     print(f"Crawling complete. Saved {saved_count} articles.")
     print(f"Processed {processed_count} URLs in total.")
