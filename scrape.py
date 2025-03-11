@@ -106,6 +106,10 @@ def crawl():
     while queue and saved_count < MAX_ARTICLES:
         # Get the next URL from the queue
         url = queue.popleft()
+
+        # Remove any URL fragments (#) and query parameters (?)
+        url = url.split('#')[0]  # Remove fragment
+        url = url.split('?')[0]  # Remove query parameters
         
         # Skip if we've already visited this URL
         if url in visited_urls:
@@ -120,7 +124,7 @@ def crawl():
         if current_time - last_progress_time > 10:
             print_progress()
             last_progress_time = current_time
-        
+
         try:
             # Make the request
             print(f"Crawling: {url}")
