@@ -27,6 +27,7 @@ class CivSearchRAG:
         self.articles = []
         self.vectorizer = TfidfVectorizer(stop_words='english')
         self.tfidf_matrix = None
+        self.conversation_history = []
         
     def load_articles(self):
         """Load all HTML articles from the minimal_html directory."""
@@ -75,8 +76,12 @@ class CivSearchRAG:
             print("No articles loaded. Please load articles first.")
             return []
         
+        # Use conversation history and LLM to create an improved query
+        improved_query = self._generate_improved_query(query)
+        print(f"Improved query: '{improved_query}'")
+        
         # Transform query to TF-IDF vector
-        query_vector = self.vectorizer.transform([query])
+        query_vector = self.vectorizer.transform([improved_query])
         
         # Calculate cosine similarity
         similarities = cosine_similarity(query_vector, self.tfidf_matrix).flatten()
@@ -98,6 +103,61 @@ class CivSearchRAG:
                 })
         
         return results
+    
+    def _generate_improved_query(self, current_query):
+        """Generate an improved search query using conversation history and LLM."""
+        # If there's no conversation history, return the original query
+        if len(self.conversation_history) < 2:  # Need at least one previous exchange
+            return current_query
+        
+        try:
+            # Prepare conversation history for context
+            history_context = ""
+            # Get the last few exchanges (up to 5 for reasonable context)
+            recent_history = self.conversation_history[-10:-1]  # Exclude the current query which is the last one
+            
+            # If there's no previous history after excluding current query, return original
+            if not recent_history:
+                return current_query
+                
+            for message in recent_history:
+                role = message["role"]
+                content = message["content"]
+                history_context += f"{role.capitalize()}: {content}\n"
+            
+            # Get the current query (which should be the last item in conversation_history)
+            current_query_from_history = self.conversation_history[-1]["content"]
+            
+            # Prepare system message
+            system_message = """You are a query improvement system for a Civilization V wiki search engine.
+Your task is to create an improved search query based on the conversation history and the current query.
+If the current query refers to previous context or uses pronouns, make it more specific and self-contained.
+Focus on extracting key Civilization V terms and concepts that would make a good search query.
+Return ONLY the improved query text without any explanation or additional text."""
+            
+            # Call OpenAI API
+            response = openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": f"Conversation history:\n{history_context}\n\nCurrent query: {current_query_from_history}\n\nImproved query:"}
+                ],
+                max_tokens=100,
+                temperature=0.3
+            )
+            
+            improved_query = response.choices[0].message.content.strip()
+            
+            # If the improved query is empty or the API call failed somehow, fall back to the original
+            if not improved_query:
+                return current_query
+                
+            return improved_query
+            
+        except Exception as e:
+            print(f"Error generating improved query: {e}")
+            # Fall back to the original query if there's an error
+            return current_query
     
     def get_article_content(self, file_path):
         """Get the full content of an article."""
@@ -122,7 +182,10 @@ class CivSearchRAG:
     def generate_response(self, query, search_results):
         """Generate a response using OpenAI API based on search results."""
         if not search_results:
-            return "I couldn't find any relevant information about that topic in the Civilization V wiki.", []
+            response = "I couldn't find any relevant information about that topic in the Civilization V wiki."
+            # No need to add user query to history as it's already added before search
+            self.conversation_history.append({"role": "assistant", "content": response})
+            return response, []
         
         # Prepare context from search results
         context = ""
@@ -133,33 +196,36 @@ class CivSearchRAG:
             context += content_chunk
             context += "\n"
         
-        # Prepare prompt for OpenAI
-        prompt = f"""You are an assistant that helps answer questions about the Civilization V video game.
-Use the following articles from the Civilization V wiki to answer the user's question.
-If you don't know the answer based on these articles, say so.
+        # Prepare system message with context
+        system_message = f"""You are a helpful assistant that answers questions about Civilization V based on wiki articles. 
+Always cite your sources using [0], [1], etc. when you use information from the provided articles.
 
-{context}
-
-When you use information from an article, cite it using square brackets with the article number, like [0], [1], etc.
-The article numbers correspond to the article headings above.
-
-User question: {query}
-
-Answer:"""
+Here are the relevant articles for the current question:
+{context}"""
+        
+        # The current query is already added to conversation history before search
+        # So we don't need to add it again here
         
         try:
+            # Prepare messages for OpenAI API
+            messages = [{"role": "system", "content": system_message}]
+            
+            # Add conversation history (limited to last 10 exchanges to manage token usage)
+            history_to_include = self.conversation_history[-10:] if len(self.conversation_history) > 10 else self.conversation_history
+            messages.extend(history_to_include)  # Include all history since we no longer add the query twice
+            
             # Call OpenAI API
             response = openai.chat.completions.create(
                 model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that answers questions about Civilization V based on wiki articles. Always cite your sources using [0], [1], etc. when you use information from the provided articles."},
-                    {"role": "user", "content": prompt}
-                ],
+                messages=messages,
                 max_tokens=500,
                 temperature=0.7
             )
             
             answer = response.choices[0].message.content
+            
+            # Add the response to conversation history
+            self.conversation_history.append({"role": "assistant", "content": answer})
             
             # Determine which articles were actually cited in the response
             cited_articles = []
@@ -178,7 +244,9 @@ Answer:"""
         
         except Exception as e:
             print(f"Error calling OpenAI API: {e}")
-            return "Sorry, I encountered an error while generating a response.", []
+            error_message = "Sorry, I encountered an error while generating a response."
+            self.conversation_history.append({"role": "assistant", "content": error_message})
+            return error_message, []
 
 def display_welcome():
     """Display a welcome message."""
@@ -226,6 +294,10 @@ def main():
                 print("\nThank you for using the Civilization V Wiki Search. Goodbye!")
                 break
             
+            # Add the current query to conversation history before searching
+            # This ensures the query improvement has access to the current query in history
+            rag.conversation_history.append({"role": "user", "content": query})
+            
             # Search for relevant articles
             print("Searching for relevant information...")
             start_time = time.time()
@@ -234,6 +306,8 @@ def main():
             
             if not results:
                 print("No relevant articles found. Please try a different question.")
+                # Add assistant response to conversation history
+                rag.conversation_history.append({"role": "assistant", "content": "I couldn't find any relevant information about that topic in the Civilization V wiki."})
                 continue
             
             # Print search results
