@@ -1,14 +1,10 @@
 import os
-import re
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import time
-import hashlib
 from collections import deque
-import sys
 import datetime
-import json
 import pickle
 
 # Configuration
@@ -41,26 +37,39 @@ def is_valid_civ5_article(url):
     
     # Must be from the same domain
     if "civilization.fandom.com" not in url:
+        if kasbah_url in url:
+            print("  - FAILED: Not from civilization.fandom.com domain")
         return False
     
     # Parse the URL to get the path
     parsed_url = urlparse(url)
     path = parsed_url.path
 
-    if "fi" in path or "de" in path or "fr" in path or "es" in path or "it" in path or "ja" in path or "ko" in path or "pl" in path or "pt" in path or "ru" in path or "zh" in path:
+    if "/fi/" in path or "/de/" in path or "/fr/" in path or "/es/" in path or "/it/" in path or "/ja/" in path or "/ko/" in path or "/pl/" in path or "/pt/" in path or "/ru/" in path or "/zh/" in path:
+        if kasbah_url in url:
+            print("  - FAILED: Contains language prefix")
         return False
     
     # Skip category, talk and category talk pages
     if any(x in path for x in ["Category:", "Talk:", "Category_talk:"]):
+        if kasbah_url in url:
+            print("  - FAILED: Is a category, talk, or category talk page")
         return False
     
     # Must end with (Civ5)
     if not path.endswith("(Civ5)"):
+        if kasbah_url in url:
+            print(f"  - FAILED: Path does not end with (Civ5). Path: {path}")
         return False
     
     # Must not be a Civilopedia page
     if "/Civilopedia" in path or path.endswith("(Civ5)/Civilopedia"):
+        if kasbah_url in url:
+            print("  - FAILED: Is a Civilopedia page")
         return False
+    
+    if kasbah_url in url:
+        print("  + PASSED ALL CHECKS: This URL is valid!")
     
     return True
 
@@ -150,12 +159,19 @@ def crawl():
     """Crawl the website starting from the START_URL using a queue-based approach."""
     global saved_count, processed_count, queue, visited_urls
     
+    # Kasbah URL for debugging
+    kasbah_url = "https://civilization.fandom.com/wiki/Kasbah_(Civ5)"
+    
     # Check if we have a saved state to resume from
     state_loaded = load_state()
     
     # If no state was loaded, initialize the queue with the starting URL
     if not state_loaded:
         queue = deque([START_URL])
+        # Add Kasbah URL directly to the queue for testing
+        if kasbah_url not in queue:
+            queue.append(kasbah_url)
+            print(f"\n!!! MANUALLY ADDED KASBAH URL TO QUEUE !!!")
     
     # Set up headers for requests
     headers = {
@@ -178,6 +194,14 @@ def crawl():
         f.write(f"Max articles: {MAX_ARTICLES}\n")
         f.write(f"Current progress: {saved_count}/{MAX_ARTICLES} articles saved\n\n")
     
+    # Check if Kasbah URL is in visited_urls
+    if kasbah_url in visited_urls:
+        print(f"\n!!! KASBAH URL ALREADY VISITED: {kasbah_url} !!!")
+    
+    # Check if Kasbah URL is in queue
+    if any(kasbah_url in url for url in queue):
+        print(f"\n!!! KASBAH URL ALREADY IN QUEUE !!!")
+    
     while queue and saved_count < MAX_ARTICLES:
         # Get the next URL from the queue
         url = queue.popleft()
@@ -188,6 +212,8 @@ def crawl():
         
         # Skip if we've already visited this URL
         if url in visited_urls:
+            if kasbah_url in url:
+                print(f"\n!!! SKIPPING KASBAH URL (ALREADY VISITED): {url} !!!")
             continue
         
         # Mark as visited
@@ -243,10 +269,19 @@ def crawl():
                 # Convert relative URLs to absolute URLs
                 absolute_url = urljoin(url, href)
                 
+                # Check for Kasbah URL
+                if kasbah_url in absolute_url:
+                    print(f"\n!!! FOUND KASBAH LINK: {absolute_url} !!!")
+                    print(f"!!! ORIGINAL HREF: {href} !!!")
+                    print(f"!!! FOUND ON PAGE: {url} !!!")
+                    print(f"!!! IS IN VISITED_URLS: {absolute_url in visited_urls} !!!")
+                
                 # Only follow links to the same domain
                 if "civilization.fandom.com" in absolute_url and absolute_url not in visited_urls:
                     # Add to the queue
                     queue.append(absolute_url)
+                    if kasbah_url in absolute_url:
+                        print(f"\n!!! ADDED KASBAH URL TO QUEUE: {absolute_url} !!!")
             
             # Be respectful and don't hammer the server
             time.sleep(DELAY)
@@ -278,6 +313,17 @@ if __name__ == "__main__":
     print(f"Starting crawler at {START_URL}")
     print(f"Saving articles to {OUTPUT_DIR}")
     print(f"Maximum articles: {MAX_ARTICLES}")
+    
+    # Test Kasbah URL validation
+    kasbah_url = "https://civilization.fandom.com/wiki/Kasbah_(Civ5)"
+    print("\n=== TESTING KASBAH URL VALIDATION ===")
+    print(f"URL: {kasbah_url}")
+    parsed_url = urlparse(kasbah_url)
+    print(f"Parsed URL: {parsed_url}")
+    print(f"Path: {parsed_url.path}")
+    print(f"Path ends with (Civ5): {parsed_url.path.endswith('(Civ5)')}")
+    print(f"Is valid: {is_valid_civ5_article(kasbah_url)}")
+    print("=====================================\n")
     
     try:
         # Start the crawl
